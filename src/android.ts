@@ -1,6 +1,7 @@
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 
 import * as xml from "fast-xml-parser";
 
@@ -31,7 +32,7 @@ interface UiAutomatorXml {
 }
 
 const getAdbPath = (): string => {
-	const exeName = process.env.platform === "win32" ? "adb.exe" : "adb";
+	const exeName = process.platform === "win32" ? "adb.exe" : "adb";
 	if (process.env.ANDROID_HOME) {
 		return path.join(process.env.ANDROID_HOME, "platform-tools", exeName);
 	}
@@ -80,7 +81,7 @@ export class AndroidRobot implements Robot {
 	public adb(...args: string[]): Buffer {
 		return execFileSync(getAdbPath(), ["-s", this.deviceId, ...args], {
 			maxBuffer: MAX_BUFFER_SIZE,
-			timeout: TIMEOUT,
+			timeout: args[0] === "install" ? 300000 : TIMEOUT,
 		});
 	}
 
@@ -123,7 +124,7 @@ export class AndroidRobot implements Robot {
 
 	public async listApps(): Promise<InstalledApp[]> {
 		// only apps that have a launcher activity are returned
-		return this.adb("shell", "cmd", "package", "query-activities", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER")
+		return this.adb("shell", "cmd", "package", "query-activities", "--user", "0", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER")
 			.toString()
 			.split("\n")
 			.map(line => line.trim())
@@ -137,7 +138,7 @@ export class AndroidRobot implements Robot {
 	}
 
 	private async listPackages(): Promise<string[]> {
-		return this.adb("shell", "pm", "list", "packages")
+		return this.adb("shell", "pm", "list", "packages", "--user", "0")
 			.toString()
 			.split("\n")
 			.map(line => line.trim())
@@ -151,14 +152,14 @@ export class AndroidRobot implements Robot {
 		if (locale) {
 			validateLocale(locale);
 			try {
-				this.silentAdb("shell", "cmd", "locale", "set-app-locales", packageName, "--locales", locale);
+				this.silentAdb("shell", "cmd", "locale", "set-app-locales", packageName, "--user", "0", "--locales", locale);
 			} catch (error) {
 				// set-app-locales requires Android 13+ (API 33), silently ignore on older versions
 			}
 		}
 
 		try {
-			this.silentAdb("shell", "monkey", "-p", packageName, "-c", "android.intent.category.LAUNCHER", "1");
+			this.silentAdb("shell", "am", "start", "--user", "0", "-a", "android.intent.action.MAIN", "-c", "android.intent.category.LAUNCHER", "-p", packageName);
 		} catch (error) {
 			throw new ActionableError(`Failed launching app with package name "${packageName}", please make sure it exists`);
 		}
@@ -374,12 +375,14 @@ export class AndroidRobot implements Robot {
 
 	public async terminateApp(packageName: string): Promise<void> {
 		validatePackageName(packageName);
-		this.adb("shell", "am", "force-stop", packageName);
+		this.adb("shell", "am", "force-stop", "--user", "0", packageName);
 	}
 
 	public async installApp(path: string): Promise<void> {
 		try {
-			this.adb("install", "-r", path);
+			const users = this.adb("shell", "pm", "list", "users").toString();
+			if (!/UserInfo\{0:/.test(users)) throw new ActionableError("Owner user 0 is missing");
+			this.adb("install", "--user", "0", "-r", path);
 		} catch (error: any) {
 			const stdout = error.stdout ? error.stdout.toString() : "";
 			const stderr = error.stderr ? error.stderr.toString() : "";
@@ -389,8 +392,9 @@ export class AndroidRobot implements Robot {
 	}
 
 	public async uninstallApp(bundleId: string): Promise<void> {
+		validatePackageName(bundleId);
 		try {
-			this.adb("uninstall", bundleId);
+			this.adb("shell", "pm", "uninstall", "--user", "0", bundleId);
 		} catch (error: any) {
 			const stdout = error.stdout ? error.stdout.toString() : "";
 			const stderr = error.stderr ? error.stderr.toString() : "";
@@ -400,7 +404,7 @@ export class AndroidRobot implements Robot {
 	}
 
 	public async openUrl(url: string): Promise<void> {
-		this.adb("shell", "am", "start", "-a", "android.intent.action.VIEW", "-d", this.escapeShellText(url));
+		this.adb("shell", "am", "start", "--user", "0", "-a", "android.intent.action.VIEW", "-d", this.escapeShellText(url));
 	}
 
 	private isAscii(text: string): boolean {
@@ -436,11 +440,11 @@ export class AndroidRobot implements Robot {
 			const base64 = Buffer.from(text).toString("base64");
 
 			// send clipboard over and immediately paste it
-			this.adb("shell", "am", "broadcast", "-a", "devicekit.clipboard.set", "-e", "encoding", "base64", "-e", "text", base64, "-n", "com.mobilenext.devicekit/.ClipboardBroadcastReceiver");
+			this.adb("shell", "am", "broadcast", "--user", "0", "-a", "devicekit.clipboard.set", "-e", "encoding", "base64", "-e", "text", base64, "-n", "com.mobilenext.devicekit/.ClipboardBroadcastReceiver");
 			this.adb("shell", "input", "keyevent", "KEYCODE_PASTE");
 
 			// clear clipboard when we're done
-			this.adb("shell", "am", "broadcast", "-a", "devicekit.clipboard.clear", "-n", "com.mobilenext.devicekit/.ClipboardBroadcastReceiver");
+			this.adb("shell", "am", "broadcast", "--user", "0", "-a", "devicekit.clipboard.clear", "-n", "com.mobilenext.devicekit/.ClipboardBroadcastReceiver");
 		} else {
 			throw new ActionableError("Non-ASCII text is not supported on Android, please install mobilenext devicekit, see https://github.com/mobile-next/devicekit-android");
 		}
@@ -474,18 +478,27 @@ export class AndroidRobot implements Robot {
 		const value = orientation === "portrait" ? 0 : 1;
 
 		// disable auto-rotation prior to setting the orientation
-		this.adb("shell", "settings", "put", "system", "accelerometer_rotation", "0");
-		this.adb("shell", "content", "insert", "--uri", "content://settings/system", "--bind", "name:s:user_rotation", "--bind", `value:i:${value}`);
+		this.adb("shell", "settings", "--user", "0", "put", "system", "accelerometer_rotation", "0");
+		this.adb("shell", "settings", "--user", "0", "put", "system", "user_rotation", `${value}`);
 	}
 
 	public async getOrientation(): Promise<Orientation> {
-		const rotation = this.adb("shell", "settings", "get", "system", "user_rotation").toString().trim();
+		const rotation = this.adb("shell", "settings", "--user", "0", "get", "system", "user_rotation").toString().trim();
 		return rotation === "0" ? "portrait" : "landscape";
 	}
 
 	private async getUiAutomatorDump(): Promise<string> {
 		for (let tries = 0; tries < 10; tries++) {
-			const dump = this.adb("exec-out", "uiautomator", "dump", "/dev/tty").toString();
+			// Android 9 can report success for /dev/tty without returning the XML.
+			const dumpPath = `/data/local/tmp/transages-ui-${randomUUID()}.xml`;
+			let dump: string;
+			try {
+				const status = this.adb("shell", "uiautomator", "dump", dumpPath).toString();
+				if (!status.includes("dumped to:")) continue;
+				dump = this.adb("shell", "cat", dumpPath).toString();
+			} finally {
+				this.silentAdb("shell", "rm", "-f", dumpPath);
+			}
 			// note: we're not catching other errors here. maybe we should check for <?xml
 			if (dump.includes("null root node returned by UiTestAutomationBridge")) {
 				// uncomment for debugging

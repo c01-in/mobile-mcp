@@ -7,6 +7,9 @@ import { createMcpServer, getAgentVersion, getSdkVersion } from "./server";
 import { error } from "./logger";
 import { Request, Response } from "express";
 import { program } from "commander";
+import { createOwnerMcpServer } from "./owner-server";
+
+const serverFactory = () => process.env.MOBILEMCP_OWNER_ANDROID === "1" ? createOwnerMcpServer() : createMcpServer();
 
 type InstallOptions = { yes?: boolean };
 
@@ -33,6 +36,9 @@ const startHttpServer = async (host: string, port: number) => {
 	});
 
 	const authToken = process.env.MOBILEMCP_AUTH;
+	if (process.env.MOBILEMCP_OWNER_ANDROID === "1" && !authToken) {
+		throw new Error("MOBILEMCP_AUTH is required for the NAS Android HTTP deployment");
+	}
 	if (!authToken) {
 		error("WARNING: MOBILEMCP_AUTH is not set. The HTTP server will accept unauthenticated connections. Set MOBILEMCP_AUTH to require Bearer token authentication.");
 	}
@@ -55,7 +61,7 @@ const startHttpServer = async (host: string, port: number) => {
 	// from the same factory — the same per-request model as before.
 	// onerror keeps request-handling and transport failures in the application
 	// log (the SDK otherwise answers HTTP 500 silently).
-	const handler = createMcpHandler(() => createMcpServer(), { onerror: logMcpError });
+	const handler = createMcpHandler(serverFactory, { onerror: logMcpError });
 	const node = toNodeHandler(handler, { onerror: logMcpError });
 
 	app.post("/mcp", (req: Request, res: Response) => {
@@ -91,7 +97,7 @@ const startStdioServer = async () => {
 		// serving the 2025-era protocol exactly as before. The factory runs
 		// lazily on the first message, so a failing createMcpServer() surfaces
 		// through onerror rather than the catch below.
-		serveStdio(() => createMcpServer(), { onerror: logMcpError });
+		serveStdio(serverFactory, { onerror: logMcpError });
 
 		// Exit cleanly on termination signals so node flushes pending work
 		// (including NODE_V8_COVERAGE output). Node's default SIGINT/SIGTERM
