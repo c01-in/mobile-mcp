@@ -39,3 +39,20 @@ reads a temporary XML file and removes it after each operation.
 Source/bridge signing keys and ADB authorization keys are retained separately
 from reproducible build cache. The bridge has no network permission. No telemetry
 or cloud fleet code is invoked by the NAS Android profile.
+
+## OAuth repair: real public end-to-end verification
+
+After gateway repair, a fresh registered verification client completed actual
+Google sign-in via Cloudflare Access using the existing allowed user session.
+The browser returned the authorization code to a loopback callback; the client
+exchanged it with its PKCE verifier, received an access token and refresh token,
+then immediately exchanged the refresh token successfully. The refreshed token
+successfully called the public `/mobile` endpoint for MCP initialize, tools/list
+(21 tools), and mobile_list_available_devices against the NAS USB phone.
+Access token lifetime remains 300 seconds with refresh now issued.
+
+This is a real OAuth/protocol end-to-end test, not a mock or admin-issued token.
+It does not claim that Muse and ChatGPT's individual client UIs were exercised.
+Muse's prior DCR HTTP 400 invalid_redirect_uri was reproduced before the fix;
+the gateway operator independently verified both clients' DCR return HTTP 201.
+Machine-readable non-secret results: oauth-repair-verification.json.

@@ -1,0 +1,10 @@
+{
+  "exchange": true,
+  "scope": "mobile",
+  "expires_in": 300,
+  "refresh_issued": true,
+  "refresh_exchange": true,
+  "initialize": "passed",
+  "tools/list": 21,
+  "tools/call": "passed"
+}
